@@ -1,0 +1,4 @@
+# ninja log v5
+4	118	1710617676631304499	build.ninja	f1bc6729d37b27d5
+0	461	1710584211117300880	CMakeFiles/Event_Driven_Chat_Server.dir/chatServer.c.o	aeb2c91aeaf8aaef
+461	615	1710584211272278455	Event_Driven_Chat_Server	617a202ae29ae9ad
