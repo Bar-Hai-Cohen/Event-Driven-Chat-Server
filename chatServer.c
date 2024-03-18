@@ -3,10 +3,29 @@
 //This variable is used as a flag to control the server loop. When it's set to 1, the server loop will end.
 static int end_server = 0;
 
+/**
+* @brief Signal handler for SIGINT (Ctrl+C)
+*
+* This function is called when the server receives the SIGINT signal (Ctrl+C).
+* It sets the `end_server` flag to 1, which will cause the server loop to end.
+*
+* @param SIG_INT The signal number (SIGINT)
+*/
 void intHandler(int SIG_INT) {
     end_server = 1; // Set flag to end the server loop
 }
 
+/**
+ * @brief Main function of the chat server program
+ *
+ * This function initializes the server, creates a socket, binds it to a port,
+ * and enters the main server loop where it handles incoming connections and
+ * messages from clients.
+ *
+ * @param argc The number of command-line arguments
+ * @param argv An array of command-line argument strings
+ * @return 0 on success, non-zero on failure
+ */
 int main(int argc, char *argv[]) {
     if (argc != 2) {
         printf("Usage: Server <port>\n");
@@ -95,10 +114,9 @@ int main(int argc, char *argv[]) {
         // Make a copy of the sets for select
         memcpy(&pool->ready_read_set, &pool->read_set, sizeof(fd_set));
         memcpy(&pool->ready_write_set, &pool->write_set, sizeof(fd_set));
-
         // Print before calling select
         printf("waiting on select()...\nMaxFd %d\n", pool->maxfd);
-
+        int counter=0;
         // Call select
         pool->nready = select(pool->maxfd + 1, &pool->ready_read_set, &pool->ready_write_set, NULL, NULL);
         if (pool->nready < 0) {
@@ -122,22 +140,29 @@ int main(int argc, char *argv[]) {
         // Handle active connections
         curr_conn = pool->conn_head;
         while (curr_conn != NULL) {
-            printf("inside while loop %d\n",curr_conn->fd);
+            if(counter==pool->nready){
+                break;
+            }
+            conn_t* next_conn = curr_conn->next; // Store the next pointer before removing the current connection
             int sd = curr_conn->fd;
             if(sd==listen_sd){
                 curr_conn = curr_conn->next;
                 continue;
             }
             if (FD_ISSET(sd, &pool->ready_read_set)) {
+                printf("Descriptor %d is readable\n", sd);
+                counter++;
                 char buffer[BUFFER_SIZE];
-                //TODO:check if recv of read
                 int len = read(sd, buffer, BUFFER_SIZE);
                 if (len < 0) {
                     perror("Error reading from client");
-                } else if (len == 0) {
-                    printf("Connection closed for sd %d\n", sd);
+                }
+                else if (len == 0) {
+                    printf("%d bytes received from sd %d\n", len, sd);
                     removeConn(sd, pool);
-                } else {
+                    printf("Connection closed for sd %d\n", sd);
+                }
+                else {
                     printf("%d bytes received from sd %d\n", len, sd);
                     if(addMsg(sd, buffer, len, pool)==-1){
                         perror("Failed to add mag");
@@ -145,21 +170,21 @@ int main(int argc, char *argv[]) {
                 }
             }
             if (FD_ISSET(sd, &pool->ready_write_set)) {
+                counter++;
                 if (writeToClient(sd, pool) == -1) {
                     perror("Error writing to client");
                 }
             }
-            curr_conn = curr_conn->next;
+            curr_conn = next_conn;
         }
     } while (end_server == 0);
 
     // Cleanup connections
     conn_t *curr_conn_cleanup = pool->conn_head;
     while (curr_conn_cleanup != NULL) {
-        printf("removing connection with sd %d \n", curr_conn_cleanup->fd);
-        conn_t* next_conn = curr_conn_cleanup->next; // Store the next pointer before removing the current connection
+        conn_t* next_conn = curr_conn_cleanup->next;
         removeConn(curr_conn_cleanup->fd, pool);
-        curr_conn_cleanup = next_conn; // Move to the next connection
+        curr_conn_cleanup = next_conn;
     }
     free(pool);
     //close(listen_sd);
@@ -167,6 +192,16 @@ int main(int argc, char *argv[]) {
     return 0;
 }
 
+
+/**
+ * @brief Initializes the connection pool
+ *
+ * This function initializes the connection pool by setting up the necessary
+ * data structures and resetting the file descriptor sets.
+ *
+ * @param pool A pointer to the connection pool structure
+ * @return 0 on success, -1 on failure
+ */
 int initPool(conn_pool_t* pool) {
     if (pool == NULL) {
         return -1;
@@ -182,6 +217,16 @@ int initPool(conn_pool_t* pool) {
     return 0;
 }
 
+/**
+ * @brief Adds a new connection to the connection pool
+ *
+ * This function adds a new connection to the connection pool by creating a
+ * new `conn_t` structure and updating the necessary data structures.
+ *
+ * @param sd The socket descriptor of the new connection
+ * @param pool A pointer to the connection pool structure
+ * @return 0 on success, -1 on failure
+ */
 int addConn(int sd, conn_pool_t* pool) {
     if (pool == NULL) {
         return -1;
@@ -209,6 +254,18 @@ int addConn(int sd, conn_pool_t* pool) {
     return 0;
 }
 
+
+/**
+ * @brief Removes a connection from the connection pool
+ *
+ * This function removes a connection from the connection pool by finding the
+ * corresponding `conn_t` structure, updating the necessary data structures,
+ * and freeing any associated resources.
+ *
+ * @param sd The socket descriptor of the connection to remove
+ * @param pool A pointer to the connection pool structure
+ * @return 0 on success, -1 if the connection is not found
+ */
 int removeConn(int sd, conn_pool_t* pool) {
     if (pool == NULL) {
         return -1;
@@ -216,6 +273,13 @@ int removeConn(int sd, conn_pool_t* pool) {
     conn_t *curr_conn = pool->conn_head;
     while (curr_conn != NULL) {
         if (curr_conn->fd == sd) {
+            conn_t* update_max_fd = curr_conn->next;
+            if(update_max_fd == NULL){
+                pool->maxfd =0;
+            }
+            else if(pool->maxfd==curr_conn->fd){
+                pool->maxfd=update_max_fd->fd;
+            }
             // Remove from connection pool
             if (curr_conn->prev != NULL) {
                 curr_conn->prev->next = curr_conn->next;
@@ -235,11 +299,16 @@ int removeConn(int sd, conn_pool_t* pool) {
                     free(temp);
                 }
             }
+
             close(sd);
             FD_CLR(sd, &(pool->read_set));
             FD_CLR(sd, &(pool->write_set));
             free(curr_conn);
+            if(pool->maxfd==sd){
+                pool->maxfd--;
+            }
             pool->nr_conns--;
+            printf("removing connection with sd %d \n", sd);
             return 0;
         }
         curr_conn = curr_conn->next;
@@ -247,6 +316,18 @@ int removeConn(int sd, conn_pool_t* pool) {
     return -1; // Connection not found
 }
 
+/**
+ * @brief Adds a message to the write queue of a connection
+ *
+ * This function adds a message to the write queue of a connection by creating
+ * a new `msg_t` structure and appending it to the connection's write queue.
+ *
+ * @param sd The socket descriptor of the connection
+ * @param buffer The buffer containing the message data
+ * @param len The length of the message data
+ * @param pool A pointer to the connection pool structure
+ * @return 0 on success, -1 on failure
+ */
 int addMsg(int sd, char* buffer, int len, conn_pool_t* pool) {
     if (pool == NULL || buffer==NULL || len<=0) {
         return -1;
@@ -285,6 +366,17 @@ int addMsg(int sd, char* buffer, int len, conn_pool_t* pool) {
     return 0;
 }
 
+/**
+ * @brief Writes messages from the write queue to a client
+ *
+ * This function iterates through the connections in the connection pool and
+ * writes any pending messages from the write queue to the corresponding client.
+ * It converts the messages to uppercase before sending them.
+ *
+ * @param sender_sd The socket descriptor of the sender connection
+ * @param pool A pointer to the connection pool structure
+ * @return 0 on success, -1 on failure
+ */
 int writeToClient(int sender_sd, conn_pool_t* pool) {
     if (pool == NULL) {
         return -1;
@@ -304,7 +396,9 @@ int writeToClient(int sender_sd, conn_pool_t* pool) {
                     perror("send failed\n");
                     return -1;
                 } else if (ret == 0) {
-
+                    // Handle the case where the write returns 0
+                    // It could indicate that the other end of the connection closed
+                    // or that the socket buffer is full.
                     return -1;
                 } else {
                     bytes_written += ret;
@@ -317,8 +411,9 @@ int writeToClient(int sender_sd, conn_pool_t* pool) {
             free(msg->message);
             free(msg);
         }
-        FD_CLR(curr_conn->fd, &pool->write_set);
+        FD_CLR(curr_conn->fd, &pool->write_set); // Clear the write flag for this client
         curr_conn = curr_conn->next;
     }
     return 0; // No message sent
 }
+
